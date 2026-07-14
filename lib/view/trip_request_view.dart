@@ -1,9 +1,12 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:swiftbike_driver/controller/chat_controller.dart';
 import 'package:swiftbike_driver/core/colors/app_colors.dart';
 import 'package:swiftbike_driver/core/helper/amount_helper.dart';
 import 'package:swiftbike_driver/core/helper/ringtone_helper.dart';
+import 'package:swiftbike_driver/service/auth_session_service.dart';
+import 'package:swiftbike_driver/view/chat/chat_view.dart';
 
 import '../controller/trip_request_controller.dart';
 
@@ -35,6 +38,77 @@ class TripRequestView extends StatefulWidget {
 }
 
 class _TripRequestViewState extends State<TripRequestView> {
+  bool _ringtonePlaying = false;
+  Future<void> _handleAccept(
+    BuildContext context,
+    TripRequestController controller,
+    dynamic tripDetails,
+  ) async {
+    try {
+      await controller.acceptTrip(tripDetails.tripId);
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Failed to accept trip. Try again.')),
+        );
+      }
+      return;
+    }
+
+    if (!context.mounted) return;
+    final session = await AuthSessionService().loadSession();
+
+    if (session != null) {
+      print(session.driverId);
+    }
+
+    final chatController = ChatController(
+      tripDetails.tripId,
+      session!.driverId, // confirm this is the correct field name
+      tripDetails.riderId, // confirm this exists on your model
+      controller.service, // <-- the shared, already-connected instance
+    );
+
+    final chatSub = controller.chatMessages.listen(
+      chatController.handleIncoming,
+    );
+
+    Navigator.of(context)
+        .push(
+          MaterialPageRoute(
+            builder: (_) => ChatView(controller: chatController),
+          ),
+        )
+        .then((_) {
+          chatSub.cancel();
+          chatController.dispose();
+        });
+  }
+
+  void _syncRingtone() {
+    final hasRequests = widget.controller.requests.isNotEmpty;
+    if (hasRequests && !_ringtonePlaying) {
+      RingtoneHelper.play();
+      _ringtonePlaying = true;
+    } else if (!hasRequests && _ringtonePlaying) {
+      RingtoneHelper.stop();
+      _ringtonePlaying = false;
+    }
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    widget.controller.addListener(_syncRingtone);
+  }
+
+  @override
+  void dispose() {
+    widget.controller.removeListener(_syncRingtone);
+    if (_ringtonePlaying) RingtoneHelper.stop();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -106,8 +180,11 @@ class _TripRequestViewState extends State<TripRequestView> {
                               isSending: controller.isSending,
                               onDeny: () =>
                                   controller.denyTrip(tripDetails.tripId),
-                              onAccept: () =>
-                                  controller.acceptTrip(tripDetails.tripId),
+                              onAccept: () => _handleAccept(
+                                context,
+                                controller,
+                                tripDetails,
+                              ),
                               onExpired: () =>
                                   controller.dismissTrip(tripDetails.tripId),
                             );
@@ -154,44 +231,50 @@ class _TripCard extends StatefulWidget {
 }
 
 class _TripCardState extends State<_TripCard> {
-  late int _segmentsLeft;
   Timer? _timer;
+  int _secondsLeft = _TripCard.totalSegments;
 
   @override
   void initState() {
     super.initState();
-    _segmentsLeft = _TripCard.totalSegments;
+
     _startCountdown();
+  }
+
+  int _computeSecondsLeft() {
+    final expiresAt = widget.tripDetails.expiresAt as DateTime;
+    return expiresAt
+        .difference(DateTime.now())
+        .inSeconds
+        .clamp(0, _TripCard.totalSegments);
   }
 
   void _startCountdown() {
     _timer?.cancel();
-    RingtoneHelper.play();
+    _secondsLeft = _computeSecondsLeft();
+
     _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (!mounted) {
         timer.cancel();
         return;
       }
-      if (_segmentsLeft <= 1) {
-        RingtoneHelper.stop();
+      final remaining = _computeSecondsLeft();
+      if (remaining <= 0) {
         timer.cancel();
-        setState(() => _segmentsLeft = 0);
-        // Notify the parent after this frame so it can remove the card.
+        setState(() => _secondsLeft = 0);
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted) widget.onExpired();
         });
         return;
       }
-      setState(() => _segmentsLeft--);
+      setState(() => _secondsLeft = remaining);
     });
   }
 
   @override
   void didUpdateWidget(covariant _TripCard oldWidget) {
     super.didUpdateWidget(oldWidget);
-    // Reset the countdown if this card now represents a different trip.
     if (oldWidget.tripDetails.tripId != widget.tripDetails.tripId) {
-      setState(() => _segmentsLeft = _TripCard.totalSegments);
       _startCountdown();
     }
   }
@@ -228,11 +311,11 @@ class _TripCardState extends State<_TripCard> {
               Expanded(
                 child: _SegmentedCountdown(
                   totalSegments: _TripCard.totalSegments,
-                  segmentsLeft: _segmentsLeft,
+                  segmentsLeft: _secondsLeft,
                 ),
               ),
               const SizedBox(width: 12),
-              _CountdownBadge(segmentsLeft: _segmentsLeft),
+              _CountdownBadge(segmentsLeft: _secondsLeft),
             ],
           ),
           const SizedBox(height: 18),

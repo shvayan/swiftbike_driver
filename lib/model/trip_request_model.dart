@@ -101,7 +101,8 @@ class TripDetails {
     this.cancelledAt,
     this.cancelReason,
     this.cancelledBy,
-  });
+    int? expiresAt,
+  }) : _expiresAtOverride = expiresAt;
 
   final String tripId;
   final String riderId;
@@ -129,6 +130,33 @@ class TripDetails {
   final double? currentLng;
   final TripCreatePriceRequest tripCreatePriceRequest;
   final RouteRequest routeRequest;
+
+  /// How long a trip request stays valid before it expires, if the server
+  /// doesn't send an explicit expiry timestamp. Match this to whatever your
+  /// countdown bar UI is actually using (adjust the constant if needed).
+  static const int _requestTimeoutSeconds = 15;
+
+  /// Set directly if the server sends `expiresAt` in the payload
+  /// (stored as millisecond epoch internally, exposed as DateTime below).
+  final int? _expiresAtOverride;
+
+  /// The moment this trip request expires, as a DateTime.
+  /// Uses the server-provided value if present, otherwise falls back to
+  /// `requestedAt + timeout`. This is what your countdown bar should read
+  /// (e.g. `tripDetails.expiresAt`) instead of a field that doesn't exist.
+  DateTime get expiresAt => DateTime.fromMillisecondsSinceEpoch(
+    _expiresAtOverride ?? (requestedAt + (_requestTimeoutSeconds * 1000)),
+  );
+
+  /// Convenience: how many seconds are left before this request expires.
+  /// Never negative — clamps to 0 once expired.
+  int get secondsRemaining {
+    final remaining = expiresAt.difference(DateTime.now());
+    if (remaining.isNegative) return 0;
+    return remaining.inSeconds;
+  }
+
+  bool get isExpired => secondsRemaining <= 0;
 
   factory TripDetails.fromJson(Map<String, dynamic> json) {
     double readDouble(dynamic value) => (value as num?)?.toDouble() ?? 0.0;
@@ -169,6 +197,9 @@ class TripDetails {
       currentLng: json['currentLng'] == null
           ? null
           : readDouble(json['currentLng']),
+      // Server may or may not send this — TripDetails falls back to
+      // requestedAt + timeout automatically via the expiresAt getter if it's absent.
+      expiresAt: json['expiresAt'] == null ? null : readInt(json['expiresAt']),
       tripCreatePriceRequest: TripCreatePriceRequest.fromJson(
         Map<String, dynamic>.from(
           json['tripCreatePriceRequest'] as Map? ?? const <String, dynamic>{},

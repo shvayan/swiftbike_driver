@@ -469,7 +469,8 @@ class _ChatPatternPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final lightPaint = Paint()..color = AppColors.primaryLight.withAlpha(70);
-    final accentPaint = Paint()..color = AppColors.primary.withAlpha(28);
+    final accentPaint = Paint()
+      ..color = const Color.fromARGB(255, 4, 142, 255).withAlpha(28);
 
     for (double y = 20; y < size.height + 40; y += 64) {
       for (double x = 18; x < size.width + 36; x += 72) {

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
@@ -15,7 +16,7 @@ class TripRequestController extends ChangeNotifier {
     String? driverId,
     String vehicleType = 'BIKE',
     String driverStatus = 'ONLINE',
-  }) : _service = service ?? TripRequestService(),
+  }) : service = service ?? TripRequestService(),
        _token = token,
        _driverId = driverId,
        _vehicleType = vehicleType,
@@ -24,7 +25,7 @@ class TripRequestController extends ChangeNotifier {
     _initCurrentLocation();
   }
 
-  final TripRequestService _service;
+  final TripRequestService service;
   final String? _token;
   final String? _driverId;
   final String _vehicleType;
@@ -52,6 +53,8 @@ class TripRequestController extends ChangeNotifier {
 
   /// All currently pending trip requests.
   List<TripRequestPayload> get requests => List.unmodifiable(_requests);
+  final _chatController = StreamController<Map<String, dynamic>>.broadcast();
+  Stream<Map<String, dynamic>> get chatMessages => _chatController.stream;
 
   /// Kept for any callers still expecting a single request (returns the
   /// most recent one, or null if none are pending).
@@ -60,15 +63,52 @@ class TripRequestController extends ChangeNotifier {
 
   Position? get currentPosition => _currentPosition;
   String? get locationError => _locationError;
+  final Map<String, DateTime> _expiryByTripId = {};
+  DateTime expiresAtFor(String tripId) =>
+      _expiryByTripId[tripId] ?? DateTime.now();
+
+  void _upsertRequest(TripRequestPayload request) {
+    final tripId = request.tripDetails.tripId;
+    final idx = _requests.indexWhere((r) => r.tripDetails.tripId == tripId);
+
+    if (idx >= 0) {
+      _requests[idx] = request; // update existing, keep its original expiry
+    } else {
+      _requests.insert(0, request); // newest first
+      _expiryByTripId[tripId] = DateTime.now().add(const Duration(seconds: 15));
+    }
+    notifyListeners();
+  }
 
   void _connect() {
-    _channel = _service.connect(token: _token);
+    _channel = service.connect(token: _token);
     _subscription = _channel!.stream.listen(
       (event) {
+        print('Received socket message: $event');
         try {
-          final request = _service.parseTripRequest(event);
-          _upsertRequest(request);
-          _message = 'New trip request received';
+          final Map<String, dynamic> data = jsonDecode(event);
+          final type = data['type']?.toString();
+
+          switch (type) {
+            case 'LOCATION_UPDATE':
+              // ignore location updates for now
+              break;
+
+            case 'CHAT':
+              _chatController.add(data);
+              // Not this controller's job — forward to chat if this socket is shared,
+              // otherwise just ignore here.
+              break;
+
+            default:
+              // Trip requests apparently don't carry an explicit 'type', so treat
+              // anything else as a trip request IF it actually has tripDetails.
+              if (data['tripDetails'] != null) {
+                final request = service.parseTripRequest(event);
+                _upsertRequest(request);
+                _message = 'New trip request received';
+              }
+          }
         } catch (error) {
           _message = 'Invalid socket message: $error';
         }
@@ -94,17 +134,6 @@ class TripRequestController extends ChangeNotifier {
 
   /// Adds a new request, or replaces the existing one with the same
   /// tripId if a duplicate/updated message arrives for it.
-  void _upsertRequest(TripRequestPayload request) {
-    final tripId = request.tripDetails.tripId;
-    final index = _requests.indexWhere(
-      (existing) => existing.tripDetails.tripId == tripId,
-    );
-    if (index >= 0) {
-      _requests[index] = request;
-    } else {
-      _requests.add(request);
-    }
-  }
 
   Future<void> _initCurrentLocation() async {
     try {
@@ -161,6 +190,7 @@ class TripRequestController extends ChangeNotifier {
   /// used when a request's countdown expires locally.
   void dismissTrip(String tripId) {
     _requests.removeWhere((r) => r.tripDetails.tripId == tripId);
+    _expiryByTripId.remove(tripId); // clean up so the map doesn't grow forever
     notifyListeners();
   }
 
@@ -180,8 +210,8 @@ class TripRequestController extends ChangeNotifier {
     notifyListeners();
 
     try {
-      _service.sendMessage(
-        _service.buildLocationUpdate(
+      service.sendMessage(
+        service.buildLocationUpdate(
           driverId: driverId,
           driverStatus: driverStatus,
           vehicleType: vehicleType,
@@ -267,9 +297,7 @@ class TripRequestController extends ChangeNotifier {
     notifyListeners();
 
     try {
-      _service.sendMessage(
-        _service.buildTripAction(type: type, tripId: tripId),
-      );
+      service.sendMessage(service.buildTripAction(type: type, tripId: tripId));
     } finally {
       _isSending = false;
       notifyListeners();

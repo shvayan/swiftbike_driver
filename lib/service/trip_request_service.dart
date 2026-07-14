@@ -17,6 +17,8 @@ class TripRequestService {
     defaultValue: 'ws://13.140.142.12:8081/socket/driver/tracking',
   );
 
+  bool get isConnected => _channel != null;
+
   WebSocketChannel connect({String? token}) {
     if (_channel != null) {
       return _channel!;
@@ -29,6 +31,10 @@ class TripRequestService {
 
   TripRequestPayload parseTripRequest(dynamic message) {
     return TripRequestPayload.fromJson(_decode(message));
+  }
+
+  Map<String, dynamic> parseChatOrDecode(dynamic message) {
+    return _decode(message);
   }
 
   Map<String, dynamic> buildLocationUpdate({
@@ -58,7 +64,16 @@ class TripRequestService {
   }
 
   void sendMessage(dynamic payload) {
-    _channel?.sink.add(jsonEncode(payload));
+    if (_channel == null) {
+      throw StateError('Socket not connected — cannot send message');
+    }
+    print('Sending over shared socket: $payload');
+    _channel!.sink.add(jsonEncode(payload));
+  }
+
+  Future<void> disconnect() async {
+    await _channel?.sink.close();
+    _channel = null;
   }
 
   Uri _buildUri({String? token}) {
@@ -82,19 +97,13 @@ class TripRequestService {
     );
   }
 
-  Map<String, dynamic> parseChatOrDecode(dynamic message) {
-    return _decode(message);
-  }
-
   Map<String, dynamic> _decode(dynamic message) {
     if (message is String) {
       return Map<String, dynamic>.from(jsonDecode(message) as Map);
     }
-
     if (message is Map<String, dynamic>) {
       return message;
     }
-
-    throw FormatException('Unsupported trip request payload');
+    throw FormatException('Unsupported socket payload');
   }
 }

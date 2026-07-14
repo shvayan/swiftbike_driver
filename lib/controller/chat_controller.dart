@@ -1,19 +1,20 @@
-import 'dart:async';
-
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:swiftbike_driver/model/chat_model.dart';
-import 'package:swiftbike_driver/service/trip_request_service.dart';
 
-// chat_controller.dart
+import '../model/chat_model.dart';
+import '../service/trip_request_service.dart';
+
 class ChatController extends ChangeNotifier {
-  ChatController(this.tripId, this.senderId, this.reserverId) {
-    _connect();
-  }
+  ChatController(
+    this.tripId,
+    this.senderId,
+    this.reserverId,
+    this._service, // shared, already-connected instance — do NOT create a new one
+  );
 
   final String tripId;
   final String senderId;
   final String reserverId;
+  final TripRequestService _service;
 
   final TextEditingController messageController = TextEditingController();
   final ScrollController scrollController = ScrollController();
@@ -21,35 +22,10 @@ class ChatController extends ChangeNotifier {
 
   final List<ChatModel> messages = [];
   bool sending = false;
-  bool socketConnected = false;
 
-  StreamSubscription? _sub;
-  final TripRequestService _service = TripRequestService();
-
-  Future<void> _connect() async {
-    final channel = _service.connect(); // pass token if needed
-    _sub = channel.stream.listen(
-      _onSocketData,
-      onError: (e) {
-        socketConnected = false;
-        notifyListeners();
-      },
-    );
-    socketConnected = true;
-    notifyListeners();
-  }
-
-  void _onSocketData(dynamic raw) {
-    Map<String, dynamic> data;
-    try {
-      data = _service.parseChatOrDecode(raw);
-    } catch (e) {
-      return; // malformed frame, ignore
-    }
-
-    if (data['type'] != 'CHAT')
-      return; // not a chat message, ignore (e.g. LOCATION_UPDATE, trip status)
-
+  /// Called by whoever forwards chat data from the shared socket
+  /// (TripRequestController.chatMessages.listen(this.handleIncoming)).
+  void handleIncoming(Map<String, dynamic> data) {
     final text = data['message']?.toString() ?? '';
     final incomingSenderId = data['senderId']?.toString();
     if (text.isEmpty || incomingSenderId == senderId) return;
@@ -135,10 +111,9 @@ class ChatController extends ChangeNotifier {
 
   @override
   void dispose() {
-    _sub?.cancel();
+    super.dispose();
     messageController.dispose();
     scrollController.dispose();
     fieldScrollController.dispose();
-    super.dispose();
   }
 }
