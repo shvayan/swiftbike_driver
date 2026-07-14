@@ -392,7 +392,7 @@ class _TripCardState extends State<_TripCard> {
                     const SizedBox(height: 4),
                     Text(
                       AmountHelper.format(
-                        tripDetails.tripCreatePriceRequest.driverEarning,
+                        tripDetails.tripCreatePriceRequest.distanceFare,
                       ),
                       style: TextStyle(
                         fontSize: 26,
