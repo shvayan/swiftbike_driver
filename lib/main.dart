@@ -5,6 +5,7 @@ import 'controller/trip_request_controller.dart';
 import 'service/auth_session_service.dart';
 import 'view/trip_request_view.dart';
 import 'view/auth_view.dart';
+import 'view/document_verification_view.dart';
 
 void main() {
   runApp(const MyApp());
@@ -53,7 +54,19 @@ class _MyAppState extends State<MyApp> {
           }
 
           final session = snapshot.data;
-          if (session != null) {
+
+          if (session == null) {
+            return AuthView(controller: _controller);
+          }
+
+          if (session.isDriverVerified && !session.isDriverDocumentsVerified) {
+            return DocumentVerificationView(
+              token: session.token,
+              driverId: session.driverId,
+            );
+          }
+
+          if (session.isDriverVerified && session.isDriverDocumentsVerified) {
             return TripRequestView(
               controller: TripRequestController(
                 token: session.token,
@@ -64,6 +77,7 @@ class _MyAppState extends State<MyApp> {
             );
           }
 
+          // Driver not verified at all yet — treat as logged out
           return AuthView(controller: _controller);
         },
       ),

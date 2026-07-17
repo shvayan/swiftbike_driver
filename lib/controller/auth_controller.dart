@@ -21,6 +21,8 @@ class AuthController extends ChangeNotifier {
   String? _driverId;
   String? _email;
   String? _username;
+  bool? isVerified;
+  bool? isDocumentsVerified;
 
   AuthStep get step => _step;
   bool get isLoading => _isLoading;
@@ -29,6 +31,8 @@ class AuthController extends ChangeNotifier {
   String? get driverId => _driverId;
   String? get email => _email;
   String? get username => _username;
+  bool? get isDriverVerified => isVerified;
+  bool? get isDriverDocumentsVerified => isDocumentsVerified;
 
   String get phoneNumber => _model.phoneNumber;
   String get otp => _model.otp;
@@ -83,10 +87,15 @@ class AuthController extends ChangeNotifier {
         _driverId = response.driverId;
         _email = response.email;
         _username = response.username;
+        isVerified = response.isVerified;
+        isDocumentsVerified = response.isDocumentsVerified;
+
         if (_token != null && _driverId != null) {
-          await _sessionService.saveSession(
-            token: _token!,
-            driverId: _driverId!,
+          await AuthSessionService().saveSession(
+            token: token!,
+            driverId: driverId!,
+            isDriverVerified: isVerified ?? false,
+            isDriverDocumentsVerified: isDocumentsVerified ?? false,
           );
         }
       }

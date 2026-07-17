@@ -33,6 +33,16 @@ class AuthService {
     return _parseResponse(response);
   }
 
+  Future<AuthRegistorResponse> register(AuthRegistorModel model) async {
+    final response = await _client.post(
+      _buildUri('api/v1/driver/auth/register'),
+      headers: _middleware.apply(),
+      body: jsonEncode(model.toJson()),
+    );
+
+    return _parseRegistorResponse(response);
+  }
+
   Future<AuthResponse> verifyOtp({
     required String phoneNumber,
     required String otp,
@@ -52,5 +62,10 @@ class AuthService {
   AuthResponse _parseResponse(http.Response response) {
     final decoded = jsonDecode(response.body) as Map<String, dynamic>;
     return AuthResponse.fromJson(decoded);
+  }
+
+  AuthRegistorResponse _parseRegistorResponse(http.Response response) {
+    final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+    return AuthRegistorResponse.fromJson(decoded);
   }
 }
