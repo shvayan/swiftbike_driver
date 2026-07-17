@@ -112,16 +112,14 @@ class RegisterController extends ChangeNotifier {
         deviceId: deviceId,
       );
 
-      // TODO: replace with your actual service call, e.g.:
-      // final response = await _authService.register(payload);
-      // // final response = await _mockRegisterCall(payload);
+      final response = await _authService.register(payload);
 
-      // success = response.success;
-      // message = response.message;
-      // token = response.token;
-      // driverId = response.driverId;
-      // username = response.username;
-      // phoneNumber = response.phoneNumber;
+      success = response.success;
+      message = response.message;
+      token = response.token;
+      driverId = response.driverId;
+      username = response.username;
+      phoneNumber = response.phoneNumber;
     } catch (e) {
       success = false;
       message = 'Registration failed. Please try again.';

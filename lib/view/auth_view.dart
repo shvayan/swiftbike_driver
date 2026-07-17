@@ -40,6 +40,12 @@ class _AuthViewState extends State<AuthView> {
   }
 
   @override
+  void initState() {
+    super.initState();
+    _phoneController.text = widget.controller.phoneNumber;
+  }
+
+  @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: _kPurple,

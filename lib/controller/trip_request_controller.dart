@@ -87,27 +87,36 @@ class TripRequestController extends ChangeNotifier {
         print('Received socket message: $event');
         try {
           final Map<String, dynamic> data = jsonDecode(event);
+          print('Parsed socket message: $data');
           final type = data['type']?.toString();
 
-          switch (type) {
-            case 'LOCATION_UPDATE':
-              // ignore location updates for now
-              break;
+          // The backend sends trip action failures without a `type`, for
+          // example:
+          // {tripId: "...", message: "Trip already accepted"}
+          // {tripId: "...", message: "Trip is Expired"}
+          // Handle these before attempting to parse the payload as a new trip
+          // request. Otherwise the stale card stays visible to this driver.
+          if (!_handleTripUnavailableResponse(data)) {
+            switch (type) {
+              case 'LOCATION_UPDATE':
+                // ignore location updates for now
+                break;
 
-            case 'CHAT':
-              _chatController.add(data);
-              // Not this controller's job — forward to chat if this socket is shared,
-              // otherwise just ignore here.
-              break;
+              case 'CHAT':
+                _chatController.add(data);
+                // Not this controller's job — forward to chat if this socket is shared,
+                // otherwise just ignore here.
+                break;
 
-            default:
-              // Trip requests apparently don't carry an explicit 'type', so treat
-              // anything else as a trip request IF it actually has tripDetails.
-              if (data['tripDetails'] != null) {
-                final request = service.parseTripRequest(event);
-                _upsertRequest(request);
-                _message = 'New trip request received';
-              }
+              default:
+                // Trip requests apparently don't carry an explicit 'type', so treat
+                // anything else as a trip request IF it actually has tripDetails.
+                if (data['tripDetails'] != null) {
+                  final request = service.parseTripRequest(event);
+                  _upsertRequest(request);
+                  _message = 'New trip request received';
+                }
+            }
           }
         } catch (error) {
           _message = 'Invalid socket message: $error';
@@ -192,6 +201,38 @@ class TripRequestController extends ChangeNotifier {
     _requests.removeWhere((r) => r.tripDetails.tripId == tripId);
     _expiryByTripId.remove(tripId); // clean up so the map doesn't grow forever
     notifyListeners();
+  }
+
+  /// Removes a request when the server says another driver accepted it or
+  /// its offer window has expired. Returns true when [data] was one of those
+  /// terminal trip responses.
+  bool _handleTripUnavailableResponse(Map<String, dynamic> data) {
+    final tripId = data['tripId']?.toString();
+    final response = data['message']?.toString().trim().toLowerCase();
+
+    if (tripId == null || tripId.isEmpty || response == null) {
+      return false;
+    }
+
+    String? driverMessage;
+    if (response == 'trip already accepted') {
+      driverMessage = 'This trip was accepted by another driver.';
+    } else if (response == 'trip is expired' || response == 'trip expired') {
+      driverMessage = 'This trip request has expired.';
+    }
+
+    if (driverMessage == null) {
+      return false;
+    }
+
+    _requests.removeWhere((r) => r.tripDetails.tripId == tripId);
+    _expiryByTripId.remove(tripId);
+    _message = driverMessage;
+    if (_requests.isEmpty) {
+      RingtoneHelper.stop();
+    }
+    notifyListeners();
+    return true;
   }
 
   Future<void> sendLocationUpdate({

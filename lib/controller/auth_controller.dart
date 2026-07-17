@@ -45,6 +45,13 @@ class AuthController extends ChangeNotifier {
     _model.otp = value;
   }
 
+  void openOtpVerification(String phoneNumber) {
+    _model.phoneNumber = phoneNumber.trim();
+    _step = AuthStep.verifyOtp;
+    _message = null;
+    notifyListeners();
+  }
+
   Future<void> submitLogin() async {
     if (_model.phoneNumber.trim().isEmpty) {
       _message = 'Enter a phone number';

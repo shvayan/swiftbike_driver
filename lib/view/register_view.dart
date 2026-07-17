@@ -1,9 +1,9 @@
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
+import '../controller/auth_controller.dart';
 import '../controller/register_controller.dart';
-import '../controller/trip_request_controller.dart';
-import 'trip_request_view.dart';
+import 'auth_view.dart';
 
 const _kPurple = Color(0xFF6C5CE7);
 const _kPurpleDark = Color(0xff6C4CF1);
@@ -62,14 +62,11 @@ class _RegisterViewState extends State<RegisterView> {
               if (!mounted) return;
               Navigator.of(context).pushReplacement(
                 MaterialPageRoute(
-                  builder: (_) => TripRequestView(
-                    controller: TripRequestController(
-                      token: _controller.token,
-                      driverId: _controller.driverId,
-                      vehicleType: 'BIKE',
-                      driverStatus: 'ONLINE',
-                    ),
-                  ),
+                  builder: (_) {
+                    final authController = AuthController();
+                    authController.openOtpVerification(_controller.phone);
+                    return AuthView(controller: authController);
+                  },
                 ),
               );
             });
