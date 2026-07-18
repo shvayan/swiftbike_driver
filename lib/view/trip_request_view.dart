@@ -138,6 +138,10 @@ class _TripRequestViewState extends State<TripRequestView> {
 
           final statusText = controller.isConnecting
               ? 'Connecting to live trip feed...'
+              : !controller.isOnline
+              ? 'You are offline'
+              : !controller.isSocketConnected
+              ? 'Reconnecting to live trip feed...'
               : requests.isEmpty
               ? 'Waiting for a new request...'
               : requests.length == 1
@@ -154,13 +158,19 @@ class _TripRequestViewState extends State<TripRequestView> {
                     locationError: controller.locationError,
                     message: controller.message,
                     tripCount: requests.length,
+                    isOnline: controller.isOnline,
+                    isChangingAvailability: controller.isChangingAvailability,
+                    onAvailabilityChanged: controller.setOnline,
                   ),
                 ),
                 Expanded(
                   child: requests.isEmpty
                       ? Padding(
                           padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
-                          child: _EmptyRequestPanel(statusText: statusText),
+                          child: _EmptyRequestPanel(
+                            statusText: statusText,
+                            isOnline: controller.isOnline,
+                          ),
                         )
                       : ListView.separated(
                           padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
@@ -651,12 +661,18 @@ class _StatusHeader extends StatelessWidget {
     required this.locationError,
     required this.message,
     required this.tripCount,
+    required this.isOnline,
+    required this.isChangingAvailability,
+    required this.onAvailabilityChanged,
   });
 
   final String statusText;
   final String? locationError;
   final String? message;
   final int tripCount;
+  final bool isOnline;
+  final bool isChangingAvailability;
+  final ValueChanged<bool> onAvailabilityChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -690,7 +706,9 @@ class _StatusHeader extends StatelessWidget {
                   borderRadius: BorderRadius.circular(14),
                 ),
                 child: Icon(
-                  tripCount == 0
+                  !isOnline
+                      ? Icons.pause_circle_outline_rounded
+                      : tripCount == 0
                       ? Icons.hourglass_empty_rounded
                       : Icons.bolt_rounded,
                   color: Colors.white,
@@ -731,11 +749,96 @@ class _StatusHeader extends StatelessWidget {
               message: locationError!,
             ),
           ],
+          const SizedBox(height: 18),
+          _AvailabilityButton(
+            isOnline: isOnline,
+            isLoading: isChangingAvailability,
+            onPressed: () => onAvailabilityChanged(!isOnline),
+          ),
           if (message != null) ...[
             const SizedBox(height: 12),
             _NoticeBanner(icon: Icons.info_outline_rounded, message: message!),
           ],
         ],
+      ),
+    );
+  }
+}
+
+/// Prominent availability control: it makes the driver's current state clear
+/// and keeps the action within easy reach without leaving the request screen.
+class _AvailabilityButton extends StatelessWidget {
+  const _AvailabilityButton({
+    required this.isOnline,
+    required this.isLoading,
+    required this.onPressed,
+  });
+
+  final bool isOnline;
+  final bool isLoading;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final stateColor = isOnline ? const Color(0xFF55D68A) : Colors.white70;
+    return Material(
+      color: Colors.white.withValues(alpha: 0.14),
+      borderRadius: BorderRadius.circular(15),
+      child: InkWell(
+        onTap: isLoading ? null : onPressed,
+        borderRadius: BorderRadius.circular(15),
+        child: Container(
+          height: 54,
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(15),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.22)),
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 10,
+                height: 10,
+                decoration: BoxDecoration(
+                  color: stateColor,
+                  shape: BoxShape.circle,
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  isOnline ? 'You are online' : 'You are offline',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ),
+              if (isLoading)
+                const SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: Colors.white,
+                  ),
+                )
+              else ...[
+                Text(
+                  isOnline ? 'GO OFFLINE' : 'GO ONLINE',
+                  style: TextStyle(
+                    color: Colors.white.withValues(alpha: 0.94),
+                    fontSize: 12,
+                    fontWeight: FontWeight.w900,
+                    letterSpacing: 0.5,
+                  ),
+                ),
+                const SizedBox(width: 4),
+                const Icon(Icons.chevron_right_rounded, color: Colors.white),
+              ],
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -848,9 +951,10 @@ class _RoutePoint extends StatelessWidget {
 }
 
 class _EmptyRequestPanel extends StatelessWidget {
-  const _EmptyRequestPanel({required this.statusText});
+  const _EmptyRequestPanel({required this.statusText, required this.isOnline});
 
   final String statusText;
+  final bool isOnline;
 
   @override
   Widget build(BuildContext context) {
@@ -877,7 +981,9 @@ class _EmptyRequestPanel extends StatelessWidget {
               shape: BoxShape.circle,
             ),
             child: Icon(
-              Icons.two_wheeler_rounded,
+              isOnline
+                  ? Icons.two_wheeler_rounded
+                  : Icons.power_settings_new_rounded,
               size: 40,
               color: _Palette.primary,
             ),
@@ -895,7 +1001,9 @@ class _EmptyRequestPanel extends StatelessWidget {
           ),
           const SizedBox(height: 8),
           Text(
-            'Your next trip request will appear here in real time.',
+            isOnline
+                ? 'Your next trip request will appear here in real time.'
+                : 'Turn on availability above when you are ready for trips.',
             textAlign: TextAlign.center,
             style: TextStyle(
               fontSize: 13,

@@ -72,8 +72,20 @@ class TripRequestService {
   }
 
   Future<void> disconnect() async {
-    await _channel?.sink.close();
+    // Clear the reference before awaiting close. A close callback can trigger
+    // a reconnect, which must never receive this stale channel from connect().
+    final channel = _channel;
     _channel = null;
+    await channel?.sink.close();
+  }
+
+  /// Drops a channel that has already failed or been closed by the server.
+  /// The identity check prevents an old socket callback from clearing a newer
+  /// connection that has since been established.
+  void invalidateChannel(WebSocketChannel channel) {
+    if (identical(_channel, channel)) {
+      _channel = null;
+    }
   }
 
   Uri _buildUri({String? token}) {

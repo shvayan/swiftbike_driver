@@ -21,7 +21,8 @@ class TripRequestController extends ChangeNotifier {
        _driverId = driverId,
        _vehicleType = vehicleType,
        _driverStatus = driverStatus {
-    _connect();
+    if (isOnline) _connect();
+    _startSocketHealthChecks();
     _initCurrentLocation();
   }
 
@@ -29,14 +30,18 @@ class TripRequestController extends ChangeNotifier {
   final String? _token;
   final String? _driverId;
   final String _vehicleType;
-  final String _driverStatus;
+  String _driverStatus;
 
   WebSocketChannel? _channel;
   StreamSubscription? _subscription;
   Timer? _locationUpdateTimer;
+  Timer? _socketHealthTimer;
 
-  bool _isConnecting = true;
+  bool _isConnecting = false;
   bool _isSending = false;
+  bool _isSocketOpen = false;
+  bool _isChangingAvailability = false;
+  bool _isDisposed = false;
   String? _message;
 
   // All currently active trip requests, most recent last. A driver can
@@ -49,6 +54,9 @@ class TripRequestController extends ChangeNotifier {
 
   bool get isConnecting => _isConnecting;
   bool get isSending => _isSending;
+  bool get isOnline => _driverStatus == 'ONLINE';
+  bool get isSocketConnected => _isSocketOpen;
+  bool get isChangingAvailability => _isChangingAvailability;
   String? get message => _message;
 
   /// All currently pending trip requests.
@@ -81,64 +89,145 @@ class TripRequestController extends ChangeNotifier {
   }
 
   void _connect() {
-    _channel = service.connect(token: _token);
-    _subscription = _channel!.stream.listen(
-      (event) {
-        print('Received socket message: $event');
-        try {
-          final Map<String, dynamic> data = jsonDecode(event);
-          print('Parsed socket message: $data');
-          final type = data['type']?.toString();
+    if (_isDisposed || !isOnline || _isConnecting || _isSocketOpen) return;
 
-          // The backend sends trip action failures without a `type`, for
-          // example:
-          // {tripId: "...", message: "Trip already accepted"}
-          // {tripId: "...", message: "Trip is Expired"}
-          // Handle these before attempting to parse the payload as a new trip
-          // request. Otherwise the stale card stays visible to this driver.
-          if (!_handleTripUnavailableResponse(data)) {
-            switch (type) {
-              case 'LOCATION_UPDATE':
-                // ignore location updates for now
-                break;
-
-              case 'CHAT':
-                _chatController.add(data);
-                // Not this controller's job — forward to chat if this socket is shared,
-                // otherwise just ignore here.
-                break;
-
-              default:
-                // Trip requests apparently don't carry an explicit 'type', so treat
-                // anything else as a trip request IF it actually has tripDetails.
-                if (data['tripDetails'] != null) {
-                  final request = service.parseTripRequest(event);
-                  _upsertRequest(request);
-                  _message = 'New trip request received';
-                }
-            }
-          }
-        } catch (error) {
-          _message = 'Invalid socket message: $error';
-        }
-        _isConnecting = false;
-        notifyListeners();
-      },
-      onError: (error) {
-        _message = 'Socket error: $error';
-        _isConnecting = false;
-        notifyListeners();
-      },
-      onDone: () {
-        _message = 'Socket closed';
-        _isConnecting = false;
-        notifyListeners();
-      },
-    );
-    debugPrint('Subscription: $_subscription');
-    _isConnecting = false;
-    _message = 'Waiting for a new trip request...';
+    _isConnecting = true;
+    _message = 'Connecting to live trip feed...';
     notifyListeners();
+
+    try {
+      final channel = service.connect(token: _token);
+      _channel = channel;
+      _isSocketOpen = true;
+      _subscription = channel.stream.listen(
+        (event) {
+          if (!identical(_channel, channel)) return;
+          print('Received socket message: $event');
+          try {
+            final Map<String, dynamic> data = jsonDecode(event);
+            print('Parsed socket message: $data');
+            final type = data['type']?.toString();
+
+            // The backend sends trip action failures without a `type`, for
+            // example:
+            // {tripId: "...", message: "Trip already accepted"}
+            // {tripId: "...", message: "Trip is Expired"}
+            // Handle these before attempting to parse the payload as a new trip
+            // request. Otherwise the stale card stays visible to this driver.
+            if (!_handleTripUnavailableResponse(data)) {
+              switch (type) {
+                case 'LOCATION_UPDATE':
+                  // ignore location updates for now
+                  break;
+
+                case 'CHAT':
+                  _chatController.add(data);
+                  // Not this controller's job — forward to chat if this socket is shared,
+                  // otherwise just ignore here.
+                  break;
+
+                default:
+                  // Trip requests apparently don't carry an explicit 'type', so treat
+                  // anything else as a trip request IF it actually has tripDetails.
+                  if (data['tripDetails'] != null) {
+                    final request = service.parseTripRequest(event);
+                    _upsertRequest(request);
+                    _message = 'New trip request received';
+                  }
+              }
+            }
+          } catch (error) {
+            _message = 'Invalid socket message: $error';
+          }
+          _isConnecting = false;
+          _isSocketOpen = true;
+          notifyListeners();
+        },
+        onError: (error) {
+          _handleSocketInterrupted(channel, 'Connection lost. Reconnecting...');
+        },
+        onDone: () {
+          _handleSocketInterrupted(
+            channel,
+            'Connection closed. Reconnecting...',
+          );
+        },
+      );
+      debugPrint('Subscription: $_subscription');
+      _isConnecting = false;
+      _message = 'Waiting for a new trip request...';
+      notifyListeners();
+    } catch (error) {
+      _isConnecting = false;
+      _isSocketOpen = false;
+      _message = 'Unable to connect. Retrying...';
+      notifyListeners();
+    }
+  }
+
+  void _handleSocketInterrupted(WebSocketChannel channel, String message) {
+    if (!identical(_channel, channel)) return;
+
+    service.invalidateChannel(channel);
+    _channel = null;
+    _subscription?.cancel();
+    _subscription = null;
+    _isSocketOpen = false;
+    _isConnecting = false;
+    if (!_isDisposed && isOnline) {
+      _message = message;
+      notifyListeners();
+    }
+  }
+
+  void _startSocketHealthChecks() {
+    _socketHealthTimer ??= Timer.periodic(const Duration(seconds: 5), (_) {
+      if (!_isDisposed && isOnline && !_isSocketOpen && !_isConnecting) {
+        _connect();
+      }
+    });
+  }
+
+  /// Changes whether this driver can receive trip requests. Going offline
+  /// closes the live socket and deliberately pauses automatic reconnection.
+  Future<void> setOnline(bool online) async {
+    if (_isChangingAvailability || online == isOnline) return;
+
+    _isChangingAvailability = true;
+    notifyListeners();
+    try {
+      _driverStatus = online ? 'ONLINE' : 'OFFLINE';
+
+      if (online) {
+        _connect();
+        await updateCurrentLocation();
+      } else {
+        // Send one final availability update before closing the channel.
+        if (_currentPosition != null && _isSocketOpen) {
+          try {
+            await _sendCurrentPosition(_currentPosition!);
+          } catch (_) {
+            // The socket may have dropped at the same time the driver went
+            // offline. Closing it below remains the important action.
+          }
+        }
+        _locationUpdateTimer?.cancel();
+        _locationUpdateTimer = null;
+        _requests.clear();
+        _expiryByTripId.clear();
+        RingtoneHelper.stop();
+        _isSocketOpen = false;
+        _isConnecting = false;
+        _message = 'You are offline. Go online to receive trip requests.';
+        await _subscription?.cancel();
+        _subscription = null;
+        _channel = null;
+        await service.disconnect();
+      }
+    } finally {
+      _isChangingAvailability = false;
+      if (!_isDisposed) notifyListeners();
+    }
   }
 
   /// Adds a new request, or replaces the existing one with the same
@@ -268,6 +357,7 @@ class TripRequestController extends ChangeNotifier {
   }
 
   Future<void> updateCurrentLocation() async {
+    if (!isOnline) return;
     try {
       final enabled = await Geolocator.isLocationServiceEnabled();
       if (!enabled) {
@@ -302,7 +392,7 @@ class TripRequestController extends ChangeNotifier {
   }
 
   void _startAutoLocationUpdates() {
-    if (_locationUpdateTimer != null) {
+    if (!isOnline || _locationUpdateTimer != null) {
       return;
     }
 
@@ -315,7 +405,7 @@ class TripRequestController extends ChangeNotifier {
 
   Future<void> _sendCurrentPosition(Position position) async {
     final driverId = _driverId;
-    if (driverId == null || driverId.isEmpty || _channel == null) {
+    if (driverId == null || driverId.isEmpty || !_isSocketOpen) {
       return;
     }
 
@@ -330,7 +420,7 @@ class TripRequestController extends ChangeNotifier {
   }
 
   Future<void> _sendTripAction(String type, String tripId) async {
-    if (_channel == null) {
+    if (!_isSocketOpen) {
       return;
     }
 
@@ -347,9 +437,11 @@ class TripRequestController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _isDisposed = true;
     _subscription?.cancel();
     _locationUpdateTimer?.cancel();
-    _channel?.sink.close();
+    _socketHealthTimer?.cancel();
+    service.disconnect();
     super.dispose();
   }
 }
