@@ -1,12 +1,14 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_overlay_window/flutter_overlay_window.dart';
 import 'package:swiftbike_driver/controller/chat_controller.dart';
 import 'package:swiftbike_driver/core/colors/app_colors.dart';
 import 'package:swiftbike_driver/core/helper/amount_helper.dart';
 import 'package:swiftbike_driver/core/helper/ringtone_helper.dart';
 import 'package:swiftbike_driver/service/auth_session_service.dart';
 import 'package:swiftbike_driver/view/chat/chat_view.dart';
+import 'package:swiftbike_driver/view/overlay/trip_lead_chat_head.dart';
 
 import '../controller/trip_request_controller.dart';
 
@@ -37,8 +39,20 @@ class TripRequestView extends StatefulWidget {
   State<TripRequestView> createState() => _TripRequestViewState();
 }
 
-class _TripRequestViewState extends State<TripRequestView> {
+class _TripRequestViewState extends State<TripRequestView>
+    with WidgetsBindingObserver {
   bool _ringtonePlaying = false;
+  String? _lastOverlayTripId;
+
+  // Trip IDs whose on-screen countdown has already hit zero. The ringtone
+  // used to depend entirely on `controller.requests` going empty, but
+  // `dismissTrip` removing an item from that list can lag behind the local
+  // timer (network round-trip, a dropped socket message, a silent
+  // exception) — the countdown would visually show 0 while the ringtone
+  // kept playing. This set lets the ringtone react to "this trip is done"
+  // the instant the timer fires, without waiting on the controller.
+  final Set<String> _locallyExpiredTripIds = {};
+
   Future<void> _handleAccept(
     BuildContext context,
     TripRequestController controller,
@@ -85,28 +99,145 @@ class _TripRequestViewState extends State<TripRequestView> {
         });
   }
 
+  /// Recomputes whether the ringtone should be playing.
+  ///
+  /// A request only counts as "active" if the controller still has it AND
+  /// its countdown hasn't already fired locally. This is what makes the
+  /// ringtone stop the moment a countdown reaches zero, instead of waiting
+  /// for `dismissTrip` to round-trip and update `controller.requests`.
+  ///
+  /// Once the controller confirms removal, the matching id is dropped from
+  /// `_locallyExpiredTripIds` so the set never grows unbounded across a
+  /// long driver session.
   void _syncRingtone() {
-    final hasRequests = widget.controller.requests.isNotEmpty;
-    if (hasRequests && !_ringtonePlaying) {
+    final liveTripIds = widget.controller.requests
+        .map((r) => r.tripDetails.tripId as String)
+        .toSet();
+
+    _locallyExpiredTripIds.removeWhere((id) => !liveTripIds.contains(id));
+
+    final hasActiveRequests = liveTripIds.any(
+      (id) => !_locallyExpiredTripIds.contains(id),
+    );
+
+    if (hasActiveRequests && !_ringtonePlaying) {
       RingtoneHelper.play();
       _ringtonePlaying = true;
-    } else if (!hasRequests && _ringtonePlaying) {
+    } else if (!hasActiveRequests && _ringtonePlaying) {
       RingtoneHelper.stop();
       _ringtonePlaying = false;
     }
   }
 
+  /// Called by a `_TripCard` the instant its local countdown hits zero.
+  /// Stops the ringtone right away (if this was the last active trip) and
+  /// only then asks the controller to actually dismiss/remove the trip.
+  void _handleCardExpired(String tripId) {
+    _locallyExpiredTripIds.add(tripId);
+    _syncRingtone();
+    widget.controller.dismissTrip(tripId);
+  }
+
+  /// Mirrors the newest live lead into the system chat head once the driver
+  /// has opted in to Android's overlay permission.
+  Future<void> _syncTripLeadChatHead() async {
+    // Going offline always removes the system overlay. This does not need the
+    // overlay permission because it only stops an already-running service.
+    if (!widget.controller.isOnline) {
+      _lastOverlayTripId = null;
+      if (await FlutterOverlayWindow.isActive()) {
+        await TripLeadChatHead.close();
+      }
+      return;
+    }
+
+    if (!await TripLeadChatHead.isAvailable()) return;
+
+    final request = widget.controller.currentRequest;
+    if (request == null) {
+      const waitingKey = '__waiting_for_trip__';
+      if (_lastOverlayTripId == waitingKey &&
+          await FlutterOverlayWindow.isActive()) {
+        return;
+      }
+
+      _lastOverlayTripId = waitingKey;
+      await TripLeadChatHead.show(
+        tripId: '',
+        pickupAddress: 'Waiting for a trip request',
+        dropAddress: 'You are online',
+        fare: '',
+      );
+      return;
+    }
+
+    final trip = request.tripDetails;
+    if (_lastOverlayTripId == trip.tripId) return;
+    if (!await TripLeadChatHead.isAvailable()) return;
+
+    _lastOverlayTripId = trip.tripId;
+    await TripLeadChatHead.show(
+      tripId: trip.tripId,
+      pickupAddress: trip.pickupAddress,
+      dropAddress: trip.dropAddress,
+      fare: AmountHelper.format(trip.tripCreatePriceRequest.totalFare),
+    );
+  }
+
+  Future<void> _showCurrentOrWaitingChatHead() async {
+    await _syncTripLeadChatHead();
+  }
+
+  Future<void> _enableChatHead() async {
+    if (!await TripLeadChatHead.isAvailable()) {
+      await TripLeadChatHead.openPermissionSettings();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Allow “display over other apps”, then return to SwiftBike.',
+          ),
+        ),
+      );
+      return;
+    }
+
+    await _showCurrentOrWaitingChatHead();
+    if (!mounted) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('Trip chat head enabled.')));
+  }
+
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     widget.controller.addListener(_syncRingtone);
+    widget.controller.addListener(_syncTripLeadChatHead);
+    _syncTripLeadChatHead();
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     widget.controller.removeListener(_syncRingtone);
+    widget.controller.removeListener(_syncTripLeadChatHead);
     if (_ringtonePlaying) RingtoneHelper.stop();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _showChatHeadAfterPermissionReturn();
+    }
+  }
+
+  Future<void> _showChatHeadAfterPermissionReturn() async {
+    if (await TripLeadChatHead.isAvailable()) {
+      await _showCurrentOrWaitingChatHead();
+    }
   }
 
   @override
@@ -127,6 +258,14 @@ class _TripRequestViewState extends State<TripRequestView> {
             color: AppColors.textPrimary,
           ),
         ),
+        actions: [
+          IconButton(
+            tooltip: 'Enable trip chat head',
+            onPressed: _enableChatHead,
+            icon: const Icon(Icons.chat_bubble_outline_rounded),
+          ),
+          const SizedBox(width: 8),
+        ],
       ),
       body: AnimatedBuilder(
         animation: widget.controller,
@@ -196,7 +335,7 @@ class _TripRequestViewState extends State<TripRequestView> {
                                 tripDetails,
                               ),
                               onExpired: () =>
-                                  controller.dismissTrip(tripDetails.tripId),
+                                  _handleCardExpired(tripDetails.tripId),
                             );
                           },
                         ),
@@ -243,6 +382,7 @@ class _TripCard extends StatefulWidget {
 class _TripCardState extends State<_TripCard> {
   Timer? _timer;
   int _secondsLeft = _TripCard.totalSegments;
+  bool _expiredFired = false;
 
   @override
   void initState() {
@@ -261,6 +401,7 @@ class _TripCardState extends State<_TripCard> {
 
   void _startCountdown() {
     _timer?.cancel();
+    _expiredFired = false;
     _secondsLeft = _computeSecondsLeft();
 
     _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
@@ -272,13 +413,21 @@ class _TripCardState extends State<_TripCard> {
       if (remaining <= 0) {
         timer.cancel();
         setState(() => _secondsLeft = 0);
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted) widget.onExpired();
-        });
+        // Fire immediately rather than waiting a frame — this is what the
+        // parent uses to stop the ringtone, so any extra delay here is
+        // audible as the sound lingering past a countdown that already
+        // reads 0.
+        _fireExpiredOnce();
         return;
       }
       setState(() => _secondsLeft = remaining);
     });
+  }
+
+  void _fireExpiredOnce() {
+    if (_expiredFired) return;
+    _expiredFired = true;
+    widget.onExpired();
   }
 
   @override

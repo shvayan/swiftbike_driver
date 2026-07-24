@@ -13,21 +13,15 @@
 
 
 
-    <service
-
-        android:name="flutter.overlay.window.flutter_overlay_window.OverlayService"
-
-        android:foregroundServiceType="specialUse"
-
-        android:exported="false">
-
-        <property
-
-            android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-
-            android:value="SwiftBike Overlay"/>
-
-    </service>
+        <!-- Required by flutter_overlay_window for the draggable trip bubble. -->
+        <service
+            android:name="flutter.overlay.window.flutter_overlay_window.OverlayService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Shows an active driver trip lead as a user-enabled chat head." />
+        </service>
         <activity
             android:name=".MainActivity"
             android:exported="true"

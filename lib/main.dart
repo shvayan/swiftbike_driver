@@ -6,9 +6,35 @@ import 'service/auth_session_service.dart';
 import 'view/trip_request_view.dart';
 import 'view/auth_view.dart';
 import 'view/document_verification_view.dart';
+import 'view/overlay/trip_lead_chat_head.dart';
+
+/// Lets code outside the widget tree (like the overlay's "View" button
+/// callback) drive navigation — push, pop, popUntil — without needing a
+/// BuildContext of its own.
+final navigatorKey = GlobalKey<NavigatorState>();
 
 void main() {
+  WidgetsFlutterBinding.ensureInitialized();
+  TripLeadChatHead.initialize();
+
+  // Overlay "View" button -> app is brought to the foreground natively,
+  // then this pops back to the root route (TripRequestView, once logged
+  // in) in case a ChatView or anything else was pushed on top. The
+  // TripRequestView itself already streams the live request list, so it
+  // will already be showing the same trip the overlay was displaying.
+  TripLeadChatHead.onOpenTripRequested = (tripId) {
+    navigatorKey.currentState?.popUntil((route) => route.isFirst);
+  };
+
   runApp(const MyApp());
+}
+
+/// Separate Flutter entry point used by Android when the app is in the
+/// background and the system renders the chat-head window.
+@pragma('vm:entry-point')
+void overlayMain() {
+  WidgetsFlutterBinding.ensureInitialized();
+  runApp(const TripLeadOverlayApp());
 }
 
 class MyApp extends StatefulWidget {
@@ -38,6 +64,7 @@ class _MyAppState extends State<MyApp> {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
+      navigatorKey: navigatorKey,
       title: 'SwiftBike Driver',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
